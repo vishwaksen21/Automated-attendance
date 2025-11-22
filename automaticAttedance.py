@@ -10,65 +10,126 @@ import datetime
 import time
 import tkinter.ttk as tkk
 import tkinter.font as font
+import config
+import logger_config
 
-haarcasecade_path = "haarcascade_frontalface_default.xml"
-trainimagelabel_path = "./TrainingImageLabel/Trainner.yml"
-trainimage_path = "./TrainingImage"
-studentdetail_path = "./StudentDetails/studentdetails.csv"
-attendance_path = "Attendance"
+haarcasecade_path = config.HAARCASCADE_PATH
+trainimagelabel_path = config.TRAINING_IMAGE_LABEL_PATH
+trainimage_path = config.TRAINING_IMAGE_PATH
+studentdetail_path = config.STUDENT_DETAIL_PATH
+attendance_path = config.ATTENDANCE_PATH
 
 def subjectChoose(text_to_speech):
+    logger = logger_config.get_logger('Attendance')
+    
     def FillAttendance():
         sub = tx.get()
         now = time.time()
-        future = now + 20
+        future = now + config.ATTENDANCE_DURATION
         if sub == "":
             t = "Please enter the subject name!!!"
             text_to_speech(t)
+            logger.warning("Attendance attempted without subject name")
         else:
+            logger.info(f"Starting attendance for subject: {sub}")
+            
+            # Check if model file exists before proceeding
+            if not os.path.exists(trainimagelabel_path):
+                e = "❌ Model not found! Please train the model first.\n\nSteps:\n1. Click 'Register Student'\n2. Click 'Train Model'"
+                Notifica.configure(
+                    text=e, bg="#1E1E1E", fg="#FF5555", width=50, font=("Segoe UI", 12, "bold")
+                )
+                Notifica.place(x=60, y=240)
+                text_to_speech("Model not found, please train model first")
+                logger.error(f"Attendance failed - Model not found at: {trainimagelabel_path}")
+                return
+            
             try:
                 recognizer = cv2.face.LBPHFaceRecognizer_create()
                 try:
                     recognizer.read(trainimagelabel_path)
-                except:
-                    e = "Model not found, please train model"
+                except Exception as read_error:
+                    e = f"❌ Error loading model: {str(read_error)}\nPlease re-train the model."
                     Notifica.configure(
-                        text=e, bg="black", fg="yellow", width=33, font=("times", 15, "bold")
+                        text=e, bg="#1E1E1E", fg="#FF5555", width=50, font=("Segoe UI", 11, "bold")
                     )
-                    Notifica.place(x=140, y=260)
-                    text_to_speech(e)
+                    Notifica.place(x=60, y=240)
+                    text_to_speech("Error loading model, please retrain")
+                    return
                 facecasCade = cv2.CascadeClassifier(haarcasecade_path)
                 df = pd.read_csv(studentdetail_path)
                 cam = cv2.VideoCapture(0)
+                
+                # Check if camera opened successfully
+                if not cam.isOpened():
+                    e = "❌ Camera not accessible!\n\nPlease check camera permissions and ensure\nno other app is using the camera."
+                    Notifica.configure(
+                        text=e, bg="#1E1E1E", fg="#FF5555", width=50, font=("Segoe UI", 11, "bold")
+                    )
+                    Notifica.place(x=60, y=240)
+                    text_to_speech("Camera not accessible")
+                    return
+                
                 font = cv2.FONT_HERSHEY_SIMPLEX
                 col_names = ["Enrollment", "Name"]
                 attendance = pd.DataFrame(columns=col_names)
                 while True:
                     ___, im = cam.read()
+                    if im is None:
+                        continue
+                    
                     gray = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
                     faces = facecasCade.detectMultiScale(gray, 1.2, 5)
+                    
                     for (x, y, w, h) in faces:
-                        global Id
-                        Id, conf = recognizer.predict(gray[y:y+h, x:x+w])
-                        if conf < 70:
-                            global Subject, aa, date, timeStamp
-                            Subject = tx.get()
-                            ts = time.time()
-                            date = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
-                            timeStamp = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
-                            aa = df.loc[df["Enrollment"] == Id]["Name"].values
-                            if len(aa) > 0:
-                                aa_str = aa[0]
+                        try:
+                            global Id
+                            # Ensure we have a valid face region
+                            face_region = gray[y:y+h, x:x+w]
+                            if face_region.size == 0:
+                                continue
+                            
+                            Id, conf = recognizer.predict(face_region)
+                            
+                            # LBPH returns distance (lower = better match)
+                            # Only accept if confidence is BELOW threshold (good match)
+                            if conf < config.CONFIDENCE_THRESHOLD:
+                                global Subject, aa, date, timeStamp
+                                Subject = tx.get()
+                                ts = time.time()
+                                date = datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+                                timeStamp = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+                                
+                                # Verify ID exists in database
+                                aa = df.loc[df["Enrollment"] == Id]["Name"].values
+                                if len(aa) > 0:
+                                    aa_str = aa[0]
+                                    tt = str(Id) + "-" + aa_str
+                                    
+                                    # Check if already marked (to avoid logging duplicates)
+                                    if Id not in attendance['Enrollment'].values:
+                                        attendance.loc[len(attendance)] = [Id, aa_str]
+                                        logger_config.log_attendance_marked(Id, aa_str, Subject, conf)
+                                    
+                                    # Draw green box for recognized student
+                                    cv2.rectangle(im, (x, y), (x+w, y+h), (0, 260, 0), 4)
+                                    cv2.putText(im, str(tt), (x + h, y), font, 1, (255, 255, 0), 4)
+                                else:
+                                    # ID predicted but not in database - treat as Unknown
+                                    Id = "Unknown"
+                                    cv2.rectangle(im, (x, y), (x+w, y+h), (0, 25, 255), 7)
+                                    cv2.putText(im, "Unknown", (x + h, y), font, 1, (0, 25, 255), 4)
                             else:
-                                aa_str = "Unknown"
-                            tt = str(Id) + "-" + aa_str
-                            attendance.loc[len(attendance)] = [Id, aa_str]
-                            cv2.rectangle(im, (x, y), (x+w, y+h), (0, 260, 0), 4)
-                            cv2.putText(im, str(tt), (x + h, y), font, 1, (255, 255, 0), 4)
-                        else:
-                            Id = "Unknown"
+                                # Confidence too high (poor match) - Unknown face
+                                Id = "Unknown"
+                                cv2.rectangle(im, (x, y), (x+w, y+h), (0, 25, 255), 7)
+                                cv2.putText(im, f"Unknown (conf:{int(conf)})", (x + h, y), font, 0.8, (0, 25, 255), 3)
+                        except Exception as pred_error:
+                            # Handle prediction errors gracefully
+                            logger.warning(f"Prediction error: {str(pred_error)}")
                             cv2.rectangle(im, (x, y), (x+w, y+h), (0, 25, 255), 7)
-                            cv2.putText(im, str(Id), (x + h, y), font, 1, (0, 25, 255), 4)
+                            cv2.putText(im, "Error", (x + h, y), font, 1, (0, 25, 255), 4)
+                            
                     if time.time() > future:
                         break
                     attendance = attendance.drop_duplicates(["Enrollment"], keep="first")
@@ -90,6 +151,20 @@ def subjectChoose(text_to_speech):
                     raise Exception("No attendance data to save! No faces were recognized.")
                 full_path = os.path.join(path, fileName)
                 attendance.to_csv(full_path, index=False)
+                
+                # Backup attendance data
+                backup_dir = os.path.join(attendance_path, "Backups")
+                if not os.path.exists(backup_dir):
+                    os.makedirs(backup_dir)
+                backup_path = os.path.join(backup_dir, fileName)
+                attendance.to_csv(backup_path, index=False)
+                
+                # Log attendance completion
+                num_students = len(attendance)
+                logger.info(f"Attendance completed - Subject: {Subject}, Students: {num_students}, File: {fileName}")
+                for _, row in attendance.iterrows():
+                    logger.info(f"  Marked present - ID: {row['Enrollment']}, Name: {row['Name']}")
+                
                 m = "Attendance Filled Successfully for " + Subject
                 Notifica.configure(
                     text=m, bg="#1E1E1E", fg="#00FF88",
@@ -133,6 +208,7 @@ def subjectChoose(text_to_speech):
                         r += 1
                 root.mainloop()
             except Exception as e:
+                logger_config.log_error('Attendance', f"Attendance marking failed for subject: {tx.get()}", e)
                 f = "Error: No Face found or file error."
                 Notifica.configure(
                     text=f, bg="#1E1E1E", fg="#FF5555",

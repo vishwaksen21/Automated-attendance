@@ -5,14 +5,70 @@ import tkinter
 import csv
 import tkinter as tk
 from tkinter import *
+from tkinter import messagebox
 import subprocess
 import platform
+import config
+import logger_config
+import export_utils
 
 def subjectchoose(text_to_speech):
+    logger = logger_config.get_logger('ShowAttendance')
+    
     # ===== COLOR SCHEME =====
     COLOR_PRIMARY = "#0078D7"
     COLOR_TEXT = "#000000"
     COLOR_TEXT_SECONDARY = "#666666"
+    
+    def export_attendance_files():
+        """Export attendance to Excel and PDF"""
+        Subject = tx.get()
+        if Subject == "":
+            t = 'Please enter the subject name.'
+            text_to_speech(t)
+            logger.warning("Export attempted without subject name")
+            return
+        
+        # Check if attendance.csv exists
+        attendance_file = f"./Attendance/{Subject}/attendance.csv"
+        if not os.path.exists(attendance_file):
+            t = f'No attendance summary found for {Subject}. Please view attendance first.'
+            text_to_speech(t)
+            messagebox.showwarning("No Data", t)
+            logger.warning(f"Export failed - no attendance file for subject: {Subject}")
+            return
+        
+        try:
+            # Create exports directory
+            export_dir = f"./Attendance/{Subject}/Exports"
+            
+            # Export to both formats
+            results = export_utils.export_attendance(attendance_file, format='both', output_dir=export_dir)
+            
+            success_messages = []
+            if results['excel']:
+                success_messages.append(f"✅ Excel: {os.path.basename(results['excel'])}")
+                logger.info(f"Excel exported: {results['excel']}")
+            else:
+                success_messages.append("⚠️ Excel: Failed (install openpyxl)")
+            
+            if results['pdf']:
+                success_messages.append(f"✅ PDF: {os.path.basename(results['pdf'])}")
+                logger.info(f"PDF exported: {results['pdf']}")
+            else:
+                success_messages.append("⚠️ PDF: Failed (install reportlab)")
+            
+            message = "Attendance Export Results:\n\n" + "\n".join(success_messages)
+            message += f"\n\nLocation: {export_dir}"
+            
+            messagebox.showinfo("Export Complete", message)
+            text_to_speech("Attendance exported successfully")
+            
+        except Exception as e:
+            error_msg = f"Export failed: {str(e)}"
+            messagebox.showerror("Export Error", error_msg)
+            logger_config.log_error('ShowAttendance', 'Export failed', e)
+            text_to_speech("Export failed")
 
     def calculate_attendance():
         Subject = tx.get()
@@ -199,6 +255,24 @@ def subjectchoose(text_to_speech):
         pady=10
     )
     attf.pack(side=LEFT, padx=8, pady=10, fill=BOTH, expand=True)
+    
+    # Export button
+    export_btn = tk.Button(
+        button_frame,
+        text="📥 Export (Excel/PDF)",
+        command=export_attendance_files,
+        bg="#F77F00",
+        fg="white",
+        activebackground="#D66D00",
+        activeforeground="white",
+        bd=0, 
+        relief=FLAT, 
+        cursor="hand2", 
+        font=("Segoe UI", 12, "bold"),
+        padx=15,
+        pady=10
+    )
+    export_btn.pack(side=LEFT, padx=8, pady=10, fill=BOTH, expand=True)
 
     # Close button
     exit_btn = tk.Button(

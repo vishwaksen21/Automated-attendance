@@ -6,19 +6,42 @@ import datetime
 import time
 import tkinter as tk
 from tkinter import messagebox
+import config
+import logger_config
 
 # take Image of user
 def TakeImage(l1, l2, haarcasecade_path, trainimage_path, message, err_screen, text_to_speech):
+    logger = logger_config.get_logger('TakeImage')
+    
     if (l1 == "") and (l2==""):
         t='Please Enter your Enrollment Number and Name.'
         text_to_speech(t)
+        logger.warning("Registration attempted with empty enrollment and name")
     elif l1=='':
         t='Please Enter your Enrollment Number.'
         text_to_speech(t)
+        logger.warning("Registration attempted with empty enrollment number")
     elif l2 == "":
         t='Please Enter your Name.'
         text_to_speech(t)
+        logger.warning("Registration attempted with empty name")
     else:
+        # Check for duplicate enrollment ID
+        studentdetail_path = config.STUDENT_DETAIL_PATH
+        if os.path.exists(studentdetail_path):
+            try:
+                df = pd.read_csv(studentdetail_path)
+                if l1 in df['Enrollment'].astype(str).values:
+                    t = f'Enrollment {l1} already exists! Please use a different enrollment number.'
+                    text_to_speech(t)
+                    messagebox.showerror("Duplicate Entry", t)
+                    logger.warning(f"Duplicate registration attempt - Enrollment ID: {l1} already exists")
+                    return
+            except Exception as e:
+                logger.error(f"Error checking for duplicates: {str(e)}")
+        
+        logger.info(f"Starting registration - Enrollment: {l1}, Name: {l2}")
+        
         try:
             # Create a stylish window for camera feedback
             cam_window = tk.Toplevel()
@@ -85,47 +108,114 @@ def TakeImage(l1, l2, haarcasecade_path, trainimage_path, message, err_screen, t
 
             # Original logic starts here (unchanged)
             cam = cv2.VideoCapture(0)
+            
+            # Check if camera opened successfully
+            if not cam.isOpened():
+                cam_window.destroy()
+                err_msg = "❌ Camera not accessible!\n\nPlease check:\n• Camera permissions\n• Camera is not used by another app\n• Camera is properly connected"
+                message.configure(text=err_msg, fg="#FF5555")
+                text_to_speech("Camera not accessible. Please check camera permissions.")
+                return
+            
             detector = cv2.CascadeClassifier(haarcasecade_path)
             Enrollment = l1
             Name = l2
             sampleNum = 0
+            rejected_count = 0  # Track rejected images
             directory = Enrollment + "_" + Name
             path = os.path.join(trainimage_path, directory)
+            
+            # Check if directory already exists
+            if os.path.exists(path):
+                import shutil
+                shutil.rmtree(path)  # Remove old images
+                logger.info(f"Removed existing images for Enrollment: {Enrollment}")
             os.mkdir(path)
 
             while True:
                 ret, img = cam.read()
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 faces = detector.detectMultiScale(gray, 1.3, 5)
+                
+                # Quality Check 1: Single face detection
+                if len(faces) > 1:
+                    cv2.putText(img, "Multiple faces detected! Only one person allowed.", 
+                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    cv2.imshow("Face Capture", img)
+                    continue
+                
                 for (x, y, w, h) in faces:
+                    face_roi = gray[y:y+h, x:x+w]
+                    
+                    # Quality Check 2: Minimum face size
+                    if w < 100 or h < 100:
+                        cv2.putText(img, "Face too small! Move closer to camera.", 
+                                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 165, 255), 2)
+                        cv2.imshow("Face Capture", img)
+                        rejected_count += 1
+                        continue
+                    
+                    # Quality Check 3: Brightness check
+                    brightness = np.mean(face_roi)
+                    if brightness < 50 or brightness > 200:
+                        status_text = "Too dark! Improve lighting." if brightness < 50 else "Too bright! Reduce lighting."
+                        cv2.putText(img, status_text, 
+                                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 165, 255), 2)
+                        cv2.imshow("Face Capture", img)
+                        rejected_count += 1
+                        continue
+                    
+                    # Quality Check 4: Blur detection (Laplacian variance)
+                    laplacian_var = cv2.Laplacian(face_roi, cv2.CV_64F).var()
+                    if laplacian_var < 100:
+                        cv2.putText(img, "Image blurry! Hold steady.", 
+                                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+                        cv2.rectangle(img, (x, y), (x + w, y + h), (0, 165, 255), 2)
+                        cv2.imshow("Face Capture", img)
+                        rejected_count += 1
+                        continue
+                    
+                    # All quality checks passed - save image
                     cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 150), 2)
+                    cv2.putText(img, f"Quality: Good (Brightness: {int(brightness)}, Sharpness: {int(laplacian_var)})", 
+                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    
                     sampleNum += 1
                     progress_label.config(
-                        text=f"Capturing Image {sampleNum}/50...",
-                        fg="#0078D7"
+                        text=f"Capturing Image {sampleNum}/{config.IMAGES_PER_STUDENT}... (Quality: ✓)",
+                        fg="#06A77D"
                     )
                     cam_window.update_idletasks()
 
                     cv2.imwrite(
                         os.path.join(path, f"{Name}_{Enrollment}_{sampleNum}.jpg"),
-                        gray[y:y+h, x:x+w],
+                        face_roi,
                     )
                     cv2.imshow("Face Capture", img)
 
                 if cv2.waitKey(1) & 0xFF == ord("q"):
+                    logger.info(f"Image capture cancelled by user - Enrollment: {Enrollment}")
                     break
-                elif sampleNum > 50:
+                elif sampleNum >= config.IMAGES_PER_STUDENT:
                     break
 
             cam.release()
             cv2.destroyAllWindows()
 
+            # Log registration statistics
+            logger.info(f"Image capture completed - Enrollment: {Enrollment}, Name: {Name}")
+            logger.info(f"Images captured: {sampleNum}/{config.IMAGES_PER_STUDENT}, Rejected: {rejected_count}")
+            
             row = [Enrollment, Name]
             with open("StudentDetails/studentdetails.csv", "a+") as csvFile:
                 writer = csv.writer(csvFile, delimiter=",")
                 writer.writerow(row)
                 csvFile.close()
 
+            logger_config.log_student_registration(Enrollment, Name, sampleNum)
+            
             res = f"✅ Images Saved for ER No: {Enrollment} | Name: {Name}"
             message.configure(text=res)
             text_to_speech(res)
@@ -168,9 +258,21 @@ def TakeImage(l1, l2, haarcasecade_path, trainimage_path, message, err_screen, t
 
             cam_window.mainloop()
 
-        except FileExistsError:
+        except FileExistsError as fe:
             F = "⚠️ Student Data already exists!"
             text_to_speech(F)
+            logger.error(f"File exists error during registration - Enrollment: {l1}, Error: {str(fe)}")
+            err_screen.configure(
+                text=F,
+                bg="#1E1E1E",
+                fg="#FF5555",
+                font=("Consolas", 13, "bold"),
+                width=35
+            )
+        except Exception as e:
+            F = f"❌ Error: {str(e)}"
+            text_to_speech("An error occurred during registration")
+            logger_config.log_error('TakeImage', f"Registration failed for Enrollment: {l1}", e)
             err_screen.configure(
                 text=F,
                 bg="#1E1E1E",

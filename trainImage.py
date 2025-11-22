@@ -7,10 +7,15 @@ import time
 from tkinter import *
 from tkinter import ttk
 from PIL import ImageTk, Image
+import config
+import logger_config
 
 
 # Train Image
 def TrainImage(haarcasecade_path, trainimage_path, trainimagelabel_path, message, text_to_speech):
+    logger = logger_config.get_logger('Training')
+    logger.info("Model training initiated")
+    
     # Create a stylish pop-up window for training progress
     progress_window = Toplevel()
     progress_window.title("🤖 Training Model")
@@ -69,8 +74,14 @@ def TrainImage(haarcasecade_path, trainimage_path, trainimagelabel_path, message
         detector = cv2.CascadeClassifier(haarcasecade_path)
         faces, Id = getImagesAndLables(trainimage_path)
 
+        num_students = len(set(Id))
+        num_images = len(faces)
+        logger.info(f"Training model - Students: {num_students}, Total images: {num_images}")
+        
         recognizer.train(faces, np.array(Id))
         recognizer.save(trainimagelabel_path)
+        
+        logger_config.log_model_trained(num_students, num_images)
 
         progress.stop()
         progress_window.destroy()
@@ -104,6 +115,7 @@ def TrainImage(haarcasecade_path, trainimage_path, trainimagelabel_path, message
         ttk.Button(content, text="✓ OK", command=success.destroy).pack(pady=15)
 
     except Exception as e:
+        logger_config.log_error('Training', 'Model training failed', e)
         progress.stop()
         progress_window.destroy()
         message.configure(text=f"⚠️ Error during training: {e}", fg="red")
